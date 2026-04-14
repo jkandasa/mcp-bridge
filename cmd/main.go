@@ -53,26 +53,35 @@ func main() {
 
 	v := version.Get()
 
+	// Bootstrap the logger at info level so version and any pre-config
+	// fatal messages use the same format as the rest of the process.
+	if err := logger.Init("info"); err != nil {
+		fmt.Fprintln(os.Stderr, "failed to init logger:", err)
+		os.Exit(1)
+	}
+
+	log := logger.L()
+
+	// Print version details before anything else — even before config is
+	// loaded — so it always appears regardless of startup failures.
+	log.Info(v.String())
+
 	// Propagate the injected version into the MCP server identity so that
 	// clients see the real release version during the initialize handshake.
 	mcp.WrapperInfo.Version = v.Version
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		// Logger not ready yet — use a temporary zap to report the error.
-		tmp, _ := zap.NewProduction()
-		tmp.Fatal("failed to load config", zap.Error(err))
+		log.Fatal("failed to load config", zap.Error(err))
 	}
 
-	// Initialise zap from config before anything else logs.
+	// Re-initialise the logger now that we know the configured level.
 	if err := logger.Init(cfg.Server.LogLevel); err != nil {
-		tmp, _ := zap.NewProduction()
-		tmp.Fatal("failed to init logger", zap.Error(err))
+		log.Fatal("failed to init logger", zap.Error(err))
 	}
 	defer logger.Sync()
 
-	log := logger.L()
-	log.Info(v.String())
+	log = logger.L()
 	log.Info("mcp-bridge starting",
 		zap.String("addr", cfg.Server.Addr),
 		zap.String("path", cfg.Server.Path),

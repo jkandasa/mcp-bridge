@@ -1,10 +1,17 @@
 # ---- build stage ----
-FROM golang:1.26-alpine AS builder
+# Always run on the native amd64 host so Go cross-compiles to the target
+# platform instead of compiling under QEMU emulation (which is ~8x slower).
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build-time version metadata injected by CI (or "dev" for local builds).
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
+
+# TARGETOS / TARGETARCH / TARGETVARIANT are set automatically by Buildx.
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 WORKDIR /src
 
@@ -12,9 +19,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build a statically-linked binary.
+# Copy source and cross-compile for the target platform.
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 \
+    GOOS=${TARGETOS} \
+    GOARCH=${TARGETARCH} \
+    GOARM=${TARGETVARIANT#v} \
+    go build \
     -trimpath \
     -ldflags="-s -w \
       -X mcp-bridge/internal/version.version=${VERSION} \

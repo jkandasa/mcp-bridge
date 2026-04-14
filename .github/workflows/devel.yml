@@ -40,7 +40,7 @@ jobs:
               -X ${PKG}.GitCommit=${GIT_COMMIT} \
               -X ${PKG}.BuildDate=${BUILD_DATE}" \
             -o mcp-bridge \
-            ./cmd/mcp-bridge
+            ./cmd
 
   # ---------------------------------------------------------------------------
   # Build and push (or repush) the "devel" container image to GHCR

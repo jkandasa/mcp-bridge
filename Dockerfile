@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       -X mcp-bridge/internal/version.GitCommit=${GIT_COMMIT} \
       -X mcp-bridge/internal/version.BuildDate=${BUILD_DATE}" \
     -o /out/mcp-bridge \
-    ./cmd/mcp-bridge
+    ./cmd
 
 # ---- runtime stage ----
 FROM scratch

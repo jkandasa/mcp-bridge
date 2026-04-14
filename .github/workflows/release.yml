@@ -67,7 +67,7 @@ jobs:
               -X ${PKG}.GitCommit=${GIT_COMMIT} \
               -X ${PKG}.BuildDate=${BUILD_DATE}" \
             -o mcp-bridge-${{ matrix.suffix }}${{ matrix.ext }} \
-            ./cmd/mcp-bridge
+            ./cmd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

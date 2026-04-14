@@ -1,5 +1,5 @@
 BIN     := mcp-bridge
-CMD     := ./cmd/mcp-bridge
+CMD     := ./cmd
 CONFIG  := config.yaml
 
 # ---------------------------------------------------------------------------

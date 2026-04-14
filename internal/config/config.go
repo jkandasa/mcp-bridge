@@ -108,6 +108,12 @@ type ServerConfig struct {
 	// server. Accepts Go duration strings (e.g. "30s").
 	// Defaults to "30s".
 	RequestTimeout string `yaml:"request_timeout"`
+
+	// Insecure disables TLS certificate verification when connecting to the
+	// remote server. Enable this only when the remote uses a self-signed or
+	// otherwise untrusted certificate and you accept the security implications.
+	// Defaults to false.
+	Insecure bool `yaml:"insecure"`
 }
 
 // RetryIntervalDuration parses RetryInterval and returns the duration.

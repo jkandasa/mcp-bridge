@@ -29,6 +29,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +54,7 @@ type Client struct {
 	configHeaders map[string]string // static headers from config (e.g. Authorization)
 	retryInterval time.Duration
 	httpClient    *http.Client
+	streamClient  *http.Client // no-timeout client for long-lived GET streams
 
 	idCounter atomic.Int64
 
@@ -67,20 +69,42 @@ type Client struct {
 }
 
 // NewClient creates a Client. retryInterval controls reconnection cadence;
-// requestTimeout is the per-request HTTP timeout.
-func NewClient(name, url string, headers map[string]string, retryInterval, requestTimeout time.Duration) *Client {
+// requestTimeout is the per-request HTTP timeout. When insecure is true,
+// TLS certificate verification is disabled (useful for self-signed certs).
+func NewClient(name, url string, headers map[string]string, retryInterval, requestTimeout time.Duration, insecure bool) *Client {
 	if retryInterval <= 0 {
 		retryInterval = 30 * time.Second
 	}
 	if requestTimeout <= 0 {
 		requestTimeout = 30 * time.Second
 	}
+
+	var transport http.RoundTripper
+	if insecure {
+		transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional: user opted in via config
+		}
+	}
+
+	httpClient := &http.Client{Timeout: requestTimeout}
+	if transport != nil {
+		httpClient.Transport = transport
+	}
+
+	// The stream client has no timeout (long-lived GET) but shares the same
+	// TLS configuration as the regular client.
+	streamClient := &http.Client{}
+	if transport != nil {
+		streamClient.Transport = transport
+	}
+
 	return &Client{
 		name:          name,
 		url:           url,
 		configHeaders: headers,
 		retryInterval: retryInterval,
-		httpClient:    &http.Client{Timeout: requestTimeout},
+		httpClient:    httpClient,
+		streamClient:  streamClient,
 	}
 }
 
@@ -341,8 +365,7 @@ func (c *Client) runPushStream(ctx context.Context) error {
 	c.applyHeaders(req, nil)
 
 	// Use a client without a timeout for the long-lived GET stream.
-	streamClient := &http.Client{}
-	resp, err := streamClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET stream: %w", err)
 	}

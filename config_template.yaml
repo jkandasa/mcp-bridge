@@ -81,6 +81,9 @@ server:
 #   headers          optional  HTTP headers sent on every request (auth, etc.)
 #   retry_interval   optional  delay between reconnection attempts (default: 30s)
 #   request_timeout  optional  per-request HTTP timeout               (default: 30s)
+#   insecure         optional  disable TLS certificate verification    (default: false)
+#                              set to true only when the remote uses a self-signed or
+#                              otherwise untrusted certificate
 #
 # MCP session management (Mcp-Session-Id) and protocol version headers are
 # proxied transparently between the parent client and the remote server.
@@ -120,6 +123,7 @@ servers:
 #    #   X-Custom-Header: "value"
 #    # retry_interval: "30s"    # default: 30s
 #    # request_timeout: "30s"   # default: 30s
+#    # insecure: false           # default: false; set true for self-signed certs
 #
 #  - name: cloudmcp
 #    url: https://api.example.com/mcp
@@ -127,3 +131,7 @@ servers:
 #      Authorization: "Bearer eyJhbGci..."
 #    retry_interval: "60s"
 #    request_timeout: "45s"
+#
+#  - name: selfhosted
+#    url: https://internal-host:8443/mcp
+#    insecure: true              # skip TLS verification for self-signed certificate

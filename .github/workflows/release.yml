@@ -11,10 +11,10 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build native binaries for all target platforms
+  # Build binaries for all target platforms
   # ---------------------------------------------------------------------------
   build:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: Build (${{ matrix.suffix }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -58,22 +58,29 @@ jobs:
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           GIT_COMMIT=$(git rev-parse --short HEAD)
-          VERSION=${{ github.ref_name }}
           PKG=mcp-bridge/internal/version
 
           go build -trimpath \
             -ldflags="-s -w \
-              -X ${PKG}.Version=${VERSION} \
+              -X ${PKG}.Version=${{ github.ref_name }} \
               -X ${PKG}.GitCommit=${GIT_COMMIT} \
               -X ${PKG}.BuildDate=${BUILD_DATE}" \
-            -o mcp-bridge-${{ matrix.suffix }}${{ matrix.ext }} \
+            -o mcp-bridge${{ matrix.ext }} \
             ./cmd
 
+      - name: Package (tar.gz)
+        if: matrix.goos != 'windows'
+        run: tar -czf mcp-bridge-${{ matrix.suffix }}.tar.gz mcp-bridge
+
+      - name: Package (zip)
+        if: matrix.goos == 'windows'
+        run: zip mcp-bridge-${{ matrix.suffix }}.zip mcp-bridge${{ matrix.ext }}
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.suffix }}
-          path: mcp-bridge-${{ matrix.suffix }}${{ matrix.ext }}
+          path: mcp-bridge-${{ matrix.suffix }}.*
 
   # ---------------------------------------------------------------------------
   # Build and push the multi-arch container image to GHCR
@@ -85,14 +92,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up QEMU (for cross-arch builds)
-        uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -100,7 +107,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -110,7 +117,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
@@ -135,10 +142,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0   # needed to read the full tag annotation / CHANGELOG
+          fetch-depth: 0
 
       - name: Download all binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: binary-*
           merge-multiple: true
@@ -147,16 +154,14 @@ jobs:
         id: changelog
         run: |
           TAG=${{ github.ref_name }}
-          # Pull the block between this tag and the previous tag heading.
           NOTES=$(awk "/^## \[${TAG}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
           if [ -z "$NOTES" ]; then
             NOTES="See [CHANGELOG.md](CHANGELOG.md) for details."
           fi
-          # Write to a file to preserve newlines.
           echo "$NOTES" > release_notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           body_path: release_notes.md

@@ -72,11 +72,8 @@ func main() {
 	defer logger.Sync()
 
 	log := logger.L()
+	log.Info(v.String())
 	log.Info("mcp-bridge starting",
-		zap.String("version", v.Version),
-		zap.String("commit", v.GitCommit),
-		zap.String("built", v.BuildDate),
-		zap.String("go", v.GoVersion),
 		zap.String("addr", cfg.Server.Addr),
 		zap.String("path", cfg.Server.Path),
 		zap.String("log_level", cfg.Server.LogLevel),

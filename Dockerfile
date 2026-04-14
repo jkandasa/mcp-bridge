@@ -17,14 +17,17 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w \
-      -X mcp-bridge/internal/version.Version=${VERSION} \
-      -X mcp-bridge/internal/version.GitCommit=${GIT_COMMIT} \
-      -X mcp-bridge/internal/version.BuildDate=${BUILD_DATE}" \
+      -X mcp-bridge/internal/version.version=${VERSION} \
+      -X mcp-bridge/internal/version.gitCommit=${GIT_COMMIT} \
+      -X mcp-bridge/internal/version.buildDate=${BUILD_DATE}" \
     -o /out/mcp-bridge \
     ./cmd
 
 # ---- runtime stage ----
-FROM scratch
+FROM alpine:3.23
+
+# Install CA certificates for outbound TLS connections to remote MCP servers.
+RUN apk add --no-cache ca-certificates tzdata
 
 # Copy the binary.
 COPY --from=builder /out/mcp-bridge /usr/local/bin/mcp-bridge

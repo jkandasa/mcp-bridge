@@ -19,11 +19,12 @@ Parent clients (e.g. Claude Code) connect to mcp-bridge as a single MCP server. 
 ## Repository layout
 
 ```
-cmd/mcp-bridge/main.go          entry point — config, TLS, router wiring, signal handling
+cmd/main.go                     entry point — config, TLS, router wiring, signal handling
 internal/
   config/config.go              YAML config types, Load(), validation, defaults
   logger/logger.go              zap initialisation (Init, L, Sync)
   tlsutil/selfsigned.go         SelfSigned() — in-memory ECDSA cert; FromFiles()
+  version/version.go            build-time version metadata (singleton via sync.Once)
   child/
     process.go                  subprocess lifecycle, auto-restart with exponential back-off
     client.go                   stdio MCP client — Initialize, CallTool, readerLoop
@@ -35,9 +36,13 @@ internal/
     server.go                   HTTP server: POST/GET(405)/DELETE, auth, dispatch
 config_template.yaml            annotated config reference (both stdio and network examples)
 config.yaml                     local working config — gitignored, not committed
-Dockerfile                      multi-stage build; EXPOSE 7575
-Makefile                        build / run / vet / fmt / tidy / clean
+Dockerfile                      multi-stage build (golang:1.26-alpine → alpine:3.23); EXPOSE 7575
+Makefile                        build / run / vet / fmt / tidy / clean / version
+.github/workflows/
+  release.yml                   triggered on v1.* tags; builds binaries + container image + GitHub Release
+  devel.yml                     triggered on main branch push; builds binaries + container image + devel pre-release
 go.mod                          module: mcp-bridge; Go 1.26
+CHANGELOG.md                    keep-a-changelog format; update before tagging a release
 ```
 
 ---
@@ -49,7 +54,8 @@ go.mod                          module: mcp-bridge; Go 1.26
 - **Dependencies**: only stdlib + `go.uber.org/zap` + `gopkg.in/yaml.v3`. Do not add third-party MCP framework libraries.
 - **After every backend change** run `go vet ./...` and `go build ./...` and fix all errors before finishing.
 - **Format**: run `gofmt -w .` on any file you touch.
-- Build flags: `-trimpath -ldflags="-s -w"` (enforced in Makefile and Dockerfile).
+- Build flags: `-trimpath -ldflags="-s -w -X mcp-bridge/internal/version.version=... -X ..."` (enforced in Makefile and Dockerfile).
+- **ldflags variable names are lowercase** (`version`, `gitCommit`, `buildDate`) — they map to unexported package-level vars in `internal/version/version.go`.
 
 ---
 
@@ -106,6 +112,7 @@ servers:
       Authorization: "Bearer token"
     retry_interval: "30s"
     request_timeout: "30s"
+    insecure: false      # set true to skip TLS cert verification (self-signed certs)
 ```
 
 ### Validation rules (enforced by `config.Load`)
@@ -154,7 +161,7 @@ mcp-bridge opens a long-lived GET stream **to each network remote** to receive `
 
 ## Default port
 
-**7575** — used everywhere: `config.go` defaults, `config_template.yaml`, `README.md`, `Dockerfile`, `cmd/mcp-bridge/main.go`.
+**7575** — used everywhere: `config.go` defaults, `config_template.yaml`, `README.md`, `Dockerfile`, `cmd/main.go`.
 
 ---
 
@@ -163,8 +170,11 @@ mcp-bridge opens a long-lived GET stream **to each network remote** to receive `
 ### Build
 ```sh
 make build
-# or
-go build -trimpath -ldflags="-s -w" -o mcp-bridge ./cmd/mcp-bridge
+```
+
+### Check version
+```sh
+./mcp-bridge version
 ```
 
 ### Run locally
@@ -186,14 +196,11 @@ docker build -t mcp-bridge .
 docker run -p 7575:7575 -v $(pwd)/config.yaml:/etc/mcp-bridge/config.yaml mcp-bridge
 ```
 
-### Claude Code client config
-```json
-{
-  "mcpServers": {
-    "bridge": { "url": "http://localhost:7575/mcp" }
-  }
-}
-```
+### Release
+1. Update `CHANGELOG.md` — change `Unreleased` to the release date under `## [vX.Y.Z]`
+2. Commit and push to `main`
+3. Tag: `git tag v1.x.y && git push origin v1.x.y`
+4. The `release.yml` workflow handles the rest automatically
 
 ---
 

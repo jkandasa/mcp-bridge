@@ -41,10 +41,14 @@ that any MCP client can reach over the network.
   background; configurable interval.
 - **Periodic tool rediscovery** — `tools/list` is re-fetched every 5 minutes
   from all servers.
+- **Insecure TLS option** — per-server `insecure: true` skips certificate
+  verification for self-signed certificates.
 - **Bearer token auth** — optional incoming auth on the bridge endpoint.
 - **TLS / HTTPS** — custom PEM certs or auto-generated self-signed cert.
 - **Structured logging** — via [zap](https://github.com/uber-go/zap); raw
   JSON-RPC bodies logged at DEBUG level.
+- **Version info** — `mcp-bridge version` prints version, commit, build date,
+  Go version, compiler, platform, and architecture.
 
 ---
 
@@ -52,7 +56,10 @@ that any MCP client can reach over the network.
 
 ```bash
 # Build
-go build -trimpath -ldflags="-s -w" -o mcp-bridge ./cmd/mcp-bridge
+make build
+
+# Check version
+./mcp-bridge version
 
 # Create config
 cp config_template.yaml config.yaml
@@ -127,6 +134,7 @@ servers:
 | `headers` | no | _(empty)_ | HTTP headers sent on every request (auth, API keys, etc.) |
 | `retry_interval` | no | `30s` | Delay between reconnection attempts when unreachable |
 | `request_timeout` | no | `30s` | Per-request HTTP timeout |
+| `insecure` | no | `false` | Skip TLS certificate verification (self-signed certs) |
 
 `command` and `url` are mutually exclusive — exactly one must be set per entry.
 
@@ -251,33 +259,28 @@ curl -s -X DELETE http://localhost:7575/mcp \
 
 ## Docker
 
-```dockerfile
-FROM golang:1.23-alpine AS builder
-WORKDIR /src
-COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /mcp-bridge ./cmd/mcp-bridge
-
-FROM alpine:3.19
-COPY --from=builder /mcp-bridge /usr/local/bin/mcp-bridge
-EXPOSE 7575
-ENTRYPOINT ["mcp-bridge", "-config", "/etc/mcp-bridge/config.yaml"]
-```
-
 ```bash
-# Build the image
-docker build -t mcp-bridge .
+# Pull from GHCR
+docker pull ghcr.io/jkandasa/mcp-bridge:latest      # latest stable release
+docker pull ghcr.io/jkandasa/mcp-bridge:main         # latest build from main branch
 
 # Run — mount your config file
 docker run --rm -p 7575:7575 \
   -v /path/to/config.yaml:/etc/mcp-bridge/config.yaml \
-  mcp-bridge
+  ghcr.io/jkandasa/mcp-bridge:latest
 
-# With a persistent data directory
+# Check version
+docker run --rm --entrypoint="" ghcr.io/jkandasa/mcp-bridge:latest mcp-bridge version
+
+# Build locally
+docker build -t mcp-bridge .
 docker run --rm -p 7575:7575 \
   -v /path/to/config.yaml:/etc/mcp-bridge/config.yaml \
-  -v /path/to/data:/var/lib/mcp-bridge \
   mcp-bridge
 ```
+
+Container images are published to [GHCR](https://github.com/jkandasa/mcp-bridge/pkgs/container/mcp-bridge)
+for `linux/amd64`, `linux/arm64`, and `linux/arm/v7`.
 
 ---
 

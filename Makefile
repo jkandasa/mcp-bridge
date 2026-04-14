@@ -12,9 +12,9 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 PKG        := mcp-bridge/internal/version
 LDFLAGS    := -s -w \
-              -X $(PKG).Version=$(VERSION) \
-              -X $(PKG).GitCommit=$(GIT_COMMIT) \
-              -X $(PKG).BuildDate=$(BUILD_DATE)
+              -X $(PKG).version=$(VERSION) \
+              -X $(PKG).gitCommit=$(GIT_COMMIT) \
+              -X $(PKG).buildDate=$(BUILD_DATE)
 
 .PHONY: build run tidy vet fmt clean version
 

@@ -1,0 +1,129 @@
+# mcp-bridge configuration template
+# Copy this file to config.yaml and fill in your values.
+# All server fields are optional — defaults are shown below.
+
+# ---------------------------------------------------------------------------
+# server — mcp-bridge listener and security settings
+# ---------------------------------------------------------------------------
+server:
+
+  # Directory for persistent data (TLS certificates, etc.).
+  # Created automatically if it does not exist.
+  # Default: "./.mcp-bridge"
+  data_dir: "./.mcp-bridge"
+
+  # TCP address to listen on.  Format: "[host]:port"
+  # Default: ":7575"
+  addr: ":7575"
+
+  # HTTP path for the MCP endpoint.
+  # Default: "/mcp"
+  path: "/mcp"
+
+  # Minimum log severity: debug | info | warn | error
+  # Use "debug" to print every raw JSON-RPC request and response.
+  # Default: "info"
+  log_level: "info"
+
+  # Bearer token required on every incoming request.
+  # Leave empty (or omit) to allow any client to connect.
+  # Clients must send:  Authorization: Bearer <token>
+  # Generate a token:   openssl rand -hex 32
+  # auth_token: "your-secret-token-here"
+
+  # ---------------------------------------------------------------------------
+  # TLS — enable HTTPS (pick one mode or omit for plain HTTP)
+  # ---------------------------------------------------------------------------
+
+  # Mode 1: custom PEM certificate and key files
+  # tls:
+  #   cert_file: /etc/mcp-bridge/tls/server.crt
+  #   key_file:  /etc/mcp-bridge/tls/server.key
+
+  # Mode 2: auto-generated self-signed P-256 certificate (in memory, no files)
+  #         Useful for development or internal networks.
+  #         Clients must trust or skip verification of the certificate.
+  # tls:
+  #   auto_cert: true
+
+# ---------------------------------------------------------------------------
+# servers — MCP servers to bridge to the HTTP endpoint
+# ---------------------------------------------------------------------------
+# Two modes are supported per entry.  Exactly one of "command" (stdio) or
+# "url" (network) must be set.
+#
+# Tools are namespaced as:  <name>_<original_tool_name>
+# Example: server name "git", tool "status"  →  unified name "git_status"
+#
+# Rules for both modes:
+#   - name  must be unique and must NOT contain underscores
+#
+# ---------------------------------------------------------------------------
+# Mode A: stdio — launch a local binary as a subprocess
+# ---------------------------------------------------------------------------
+# The process is started by mcp-bridge and restarted automatically with
+# exponential back-off (500 ms → 30 s) if it crashes.
+#
+#   name     required  unique identifier (no underscores)
+#   command  required  absolute path or PATH-resolvable binary
+#   args     optional  command-line arguments for the binary
+#   env      optional  KEY=VALUE pairs added to the child environment
+#             (child inherits mcp-bridge's environment first)
+#
+# ---------------------------------------------------------------------------
+# Mode B: network — connect to a remote HTTP(S) MCP server
+# ---------------------------------------------------------------------------
+# The remote server must already be running and reachable.  mcp-bridge will
+# retry the connection in the background if it is unreachable at startup.
+#
+#   name             required  unique identifier (no underscores)
+#   url              required  HTTP(S) MCP endpoint, e.g. http://host:9000/mcp
+#   headers          optional  HTTP headers sent on every request (auth, etc.)
+#   retry_interval   optional  delay between reconnection attempts (default: 30s)
+#   request_timeout  optional  per-request HTTP timeout               (default: 30s)
+#
+# MCP session management (Mcp-Session-Id) and protocol version headers are
+# proxied transparently between the parent client and the remote server.
+# SSE (text/event-stream) responses are parsed automatically.
+# A long-lived GET stream is opened after connect to receive server-initiated
+# notifications (e.g. tools/list_changed triggers an automatic refresh).
+
+servers:
+# Uncomment and configure each server you want to enable.
+
+# --- stdio examples ---
+#
+#  - name: filesystem
+#    command: /usr/local/bin/filesystem-mcp-server
+#    args: []
+#    # env:
+#    #   - ROOT_DIR=/home/user
+#
+#  - name: git
+#    command: /usr/local/bin/git-mcp-server
+#    args: []
+#    # env:
+#    #   - GIT_REPO=/home/user/myrepo
+#
+#  - name: postgres
+#    command: /usr/local/bin/postgres-mcp-server
+#    args: []
+#    # env:
+#    #   - POSTGRES_DSN=postgres://user:password@localhost:5432/mydb
+
+# --- network examples ---
+#
+#  - name: remote
+#    url: http://remote-host:9000/mcp
+#    # headers:
+#    #   Authorization: "Bearer secret-token"
+#    #   X-Custom-Header: "value"
+#    # retry_interval: "30s"    # default: 30s
+#    # request_timeout: "30s"   # default: 30s
+#
+#  - name: cloudmcp
+#    url: https://api.example.com/mcp
+#    headers:
+#      Authorization: "Bearer eyJhbGci..."
+#    retry_interval: "60s"
+#    request_timeout: "45s"

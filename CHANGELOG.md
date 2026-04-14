@@ -13,6 +13,13 @@ Versions correspond to Git tags (`v1.x.y`).
 - Initial release of mcp-bridge.
 - Bridges multiple MCP servers (stdio subprocess and remote HTTP/HTTPS) behind
   a single unified MCP HTTP endpoint.
+- **Local server mode**: define exec commands and HTTP requests directly in
+  config as MCP tools — no external process required. Per-tool timeout
+  overrides a per-server default (both default to 30 s).
+  - Exec tools: stdout and stderr returned as separate content items;
+    non-zero exit → `isError: true`.
+  - HTTP tools: response status code + body returned as content;
+    non-2xx → `isError: true`.
 - Tool namespacing: `<server>_<tool>`.
 - MCP Streamable HTTP transport with SSE support.
 - Session management (`Mcp-Session-Id`) proxied transparently.
@@ -24,6 +31,7 @@ Versions correspond to Git tags (`v1.x.y`).
 - Optional Bearer token authentication on the bridge endpoint.
 - TLS support: custom cert/key files or auto-generated self-signed certificate.
 - Structured logging via `go.uber.org/zap`.
+- Version details always printed at startup before config is loaded.
 - `version` subcommand: `mcp-bridge version` prints version, git commit, build
   date, Go version, compiler, platform, and architecture.
 - Build-time version stamping via `-ldflags -X` (`internal/version` package).

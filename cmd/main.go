@@ -32,6 +32,7 @@ import (
 
 	"mcp-bridge/internal/child"
 	"mcp-bridge/internal/config"
+	"mcp-bridge/internal/local"
 	"mcp-bridge/internal/logger"
 	"mcp-bridge/internal/mcp"
 	"mcp-bridge/internal/network"
@@ -161,6 +162,33 @@ func main() {
 				// loop internally and returns nil.
 				if err := cl.Initialize(ctx); err != nil {
 					log.Error("network server initialize error",
+						zap.String("server", srv.Name),
+						zap.Error(err),
+					)
+				}
+			}()
+
+		} else if len(srv.Local) > 0 {
+			// ----------------------------------------------------------------
+			// Local MCP server (exec commands and HTTP requests)
+			// ----------------------------------------------------------------
+			cl := local.NewClient(srv.Name, srv.Local, srv.TimeoutDuration())
+			cl.ToolsRefreshed = func(serverName string, tools []mcp.Tool) {
+				rt.Rebuild(serverName, tools, cl)
+			}
+
+			log.Info("registering local MCP server",
+				zap.String("name", srv.Name),
+				zap.Int("tools", len(srv.Local)),
+				zap.Duration("default_timeout", srv.TimeoutDuration()),
+			)
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// Initialize is synchronous and always succeeds.
+				if err := cl.Initialize(ctx); err != nil {
+					log.Error("local server initialize error",
 						zap.String("server", srv.Name),
 						zap.Error(err),
 					)

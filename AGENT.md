@@ -8,7 +8,7 @@ This file is the authoritative guide for any AI coding agent working on this rep
 
 **mcp-bridge** is a production-grade MCP (Model Context Protocol) bridge server written in Go. It:
 
-1. Manages local stdio MCP server subprocesses AND remote HTTP(S) MCP servers defined in `config.yaml`
+1. Manages local stdio MCP server subprocesses, remote HTTP(S) MCP servers, and locally-defined exec/HTTP tools defined in `config.yaml`
 2. Aggregates all their tools under namespaced names (`<server>_<tool>`)
 3. Exposes the unified tool set over a single HTTP(S) **Streamable HTTP MCP** endpoint (`/mcp` by default)
 
@@ -30,11 +30,15 @@ internal/
     client.go                   stdio MCP client — Initialize, CallTool, readerLoop
   network/
     client.go                   HTTP/SSE MCP client — Initialize, CallTool, retryLoop, server-push
+  local/
+    local.go                    local Client — NewClient, Initialize, CallTool, Ready; always Ready=true
+    exec.go                     callExec — runs os/exec, captures stdout+stderr as separate content items
+    http.go                     callHTTP — fires http.Client request, returns status+body
   router/router.go              ChildClient interface, routing table, TerminateAll
   mcp/
     protocol.go                 JSON-RPC types, MCP header constants, error codes
     server.go                   HTTP server: POST/GET(405)/DELETE, auth, dispatch
-config_template.yaml            annotated config reference (both stdio and network examples)
+config_template.yaml            annotated config reference (stdio, network, and local examples)
 config.yaml                     local working config — gitignored, not committed
 Dockerfile                      multi-stage build (golang:1.26-alpine → alpine:3.23); EXPOSE 7575
 Makefile                        build / run / vet / fmt / tidy / clean / version
@@ -113,12 +117,28 @@ servers:
     retry_interval: "30s"
     request_timeout: "30s"
     insecure: false      # set true to skip TLS cert verification (self-signed certs)
+
+  - name: sysadmin       # local mode
+    timeout: "30s"       # default for all tools; individual tools may override
+    local:
+      - tool: list_tmp   # exec tool — command + args, fixed at config time
+        description: "List /tmp"
+        command: ls
+        args: ["-alh", "/tmp"]
+        timeout: "10s"   # overrides server-level default
+      - tool: get_status # http tool — url + method + headers + body
+        description: "Check status endpoint"
+        url: http://internal-host/status
+        method: GET
 ```
 
 ### Validation rules (enforced by `config.Load`)
 - `server.name` must be unique and must not contain underscores
-- Exactly one of `command` (stdio) or `url` (network) per server entry — they are mutually exclusive
+- Exactly one of `command` (stdio), `url` (network), or `local` (local) per server entry — all three are mutually exclusive
+- Within a local server, each tool must have exactly one of `command` or `url` — mutually exclusive
+- Local tool names must be unique within the server and must not contain underscores
 - `retry_interval` and `request_timeout` must be valid positive Go duration strings
+- `timeout` (server-level and per-tool) must be a valid positive Go duration string if set
 - `tls.cert_file` and `tls.key_file` must be set together
 - At least one server must be configured
 

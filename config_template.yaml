@@ -49,13 +49,13 @@ server:
 # ---------------------------------------------------------------------------
 # servers — MCP servers to bridge to the HTTP endpoint
 # ---------------------------------------------------------------------------
-# Two modes are supported per entry.  Exactly one of "command" (stdio) or
-# "url" (network) must be set.
+# Three modes are supported per entry.  Exactly one of "command" (stdio),
+# "url" (network), or "local" must be set.
 #
 # Tools are namespaced as:  <name>_<original_tool_name>
 # Example: server name "git", tool "status"  →  unified name "git_status"
 #
-# Rules for both modes:
+# Rules for all modes:
 #   - name  must be unique and must NOT contain underscores
 #
 # ---------------------------------------------------------------------------
@@ -90,6 +90,31 @@ server:
 # SSE (text/event-stream) responses are parsed automatically.
 # A long-lived GET stream is opened after connect to receive server-initiated
 # notifications (e.g. tools/list_changed triggers an automatic refresh).
+#
+# ---------------------------------------------------------------------------
+# Mode C: local — expose shell commands and HTTP requests as tools
+# ---------------------------------------------------------------------------
+# Tools are defined entirely in config — no external process or server needed.
+# Each tool is either an exec command (set "command") or an HTTP call (set
+# "url"). Arguments are fixed at config time; callers cannot supply extra args.
+#
+#   name     required  unique identifier (no underscores)
+#   timeout  optional  default timeout for all tools in this block (default: 30s)
+#                      individual tools may override this with their own timeout
+#
+#   local[].tool         required  tool name (no underscores, unique within server)
+#   local[].description  optional  shown to MCP clients
+#   local[].timeout      optional  overrides the server-level default for this tool
+#
+#   exec mode (set "command"):
+#     local[].command  required  binary to run (absolute or PATH-resolvable)
+#     local[].args     optional  fixed command-line arguments
+#
+#   http mode (set "url"):
+#     local[].url      required  HTTP endpoint to call
+#     local[].method   optional  HTTP method (default: GET)
+#     local[].headers  optional  HTTP headers sent on every request
+#     local[].body     optional  request body (useful with POST/PUT)
 
 servers:
 # Uncomment and configure each server you want to enable.
@@ -135,3 +160,40 @@ servers:
 #  - name: selfhosted
 #    url: https://internal-host:8443/mcp
 #    insecure: true              # skip TLS verification for self-signed certificate
+
+# --- local examples ---
+#
+#  - name: sysadmin
+#    timeout: "30s"              # default timeout for all tools; individual tools may override
+#    local:
+#      # exec tool — runs a local command
+#      - tool: list_tmp_files
+#        description: "List files in /tmp"
+#        command: ls
+#        args: ["-alh", "/tmp"]
+#        timeout: "10s"          # overrides the server-level 30s for this tool only
+#
+#      # exec tool — no per-tool timeout, falls back to server-level 30s
+#      - tool: disk_usage
+#        description: "Show disk usage of the root filesystem"
+#        command: df
+#        args: ["-h", "/"]
+#
+#      # http tool — HTTP GET request
+#      - tool: get_weather
+#        description: "Current weather for London (JSON)"
+#        url: https://wttr.in/London?format=j1
+#        method: GET
+#        headers:
+#          Accept: application/json
+#        timeout: "15s"
+#
+#      # http tool — HTTP POST with a body
+#      - tool: notify_webhook
+#        description: "Send a ping to the internal webhook"
+#        url: https://internal-host/webhook
+#        method: POST
+#        headers:
+#          Content-Type: application/json
+#          Authorization: "Bearer secret"
+#        body: '{"event":"ping"}'

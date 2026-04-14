@@ -1,8 +1,8 @@
 # mcp-bridge
 
 A production-grade MCP bridge server that aggregates any number of MCP servers
-— local stdio binaries **and** remote HTTP(S) network servers — and exposes
-them all through a single unified HTTP(S) endpoint.
+— local stdio binaries, remote HTTP(S) network servers, **and local exec/HTTP
+tools** — and exposes them all through a single unified HTTP(S) endpoint.
 
 ```
 AI client (Claude Code, etc.)
@@ -10,21 +10,25 @@ AI client (Claude Code, etc.)
     ▼
 mcp-bridge  (:7575/mcp by default)
     ├── filesystem-mcp-server  (subprocess · stdio)
-    ├── git-mcp-server         (subprocess · stdio)
-    └── https://api.example.com/mcp  (network · HTTP/SSE)
+    ├── https://api.example.com/mcp  (network · HTTP/SSE)
+    └── sysadmin               (local · exec + http tools)
 ```
 
 Child servers speak either **stdio** (JSON-RPC over stdin/stdout) or
-**Streamable HTTP** (the same MCP transport the parent uses). mcp-bridge
-manages their lifecycle and re-exposes all their tools through one endpoint
-that any MCP client can reach over the network.
+**Streamable HTTP** (the same MCP transport the parent uses). Local tools are
+defined directly in config as shell commands or HTTP requests — no external
+process needed. mcp-bridge manages their lifecycle and re-exposes all their
+tools through one endpoint that any MCP client can reach over the network.
 
 ---
 
 ## Features
 
-- **Two server modes** — stdio subprocesses and remote HTTP(S) servers in the
-  same config file; mix and match freely.
+- **Three server modes** — stdio subprocesses, remote HTTP(S) servers, and
+  local exec/HTTP tools in the same config file; mix and match freely.
+- **Local tools** — define shell commands and HTTP requests directly in config;
+  exposed as MCP tools with no external process required. Per-tool and
+  per-server configurable timeouts (default 30 s).
 - **Full MCP Streamable HTTP transport** — POST, DELETE, and transparent
   `Mcp-Session-Id` / `MCP-Protocol-Version` header proxying.
 - **SSE response handling** — remote servers may reply with
@@ -80,7 +84,7 @@ servers:
     command: /usr/local/bin/git-mcp-server
 ```
 
-### Mixed config (stdio + network)
+### Mixed config (stdio + network + local)
 
 ```yaml
 server:
@@ -97,6 +101,25 @@ servers:
       Authorization: "Bearer secret-token"
     retry_interval: "30s"
     request_timeout: "30s"
+
+  - name: sysadmin
+    timeout: "30s"        # default timeout for all tools in this block
+    local:
+      - tool: list_tmp_files
+        description: "List files in /tmp"
+        command: ls
+        args: ["-alh", "/tmp"]
+        timeout: "10s"    # overrides server-level default
+
+      - tool: disk_usage
+        description: "Disk usage of root filesystem"
+        command: df
+        args: ["-h", "/"]
+
+      - tool: get_weather
+        description: "Current weather for London"
+        url: https://wttr.in/London?format=j1
+        method: GET
 ```
 
 ---
@@ -136,7 +159,38 @@ servers:
 | `request_timeout` | no | `30s` | Per-request HTTP timeout |
 | `insecure` | no | `false` | Skip TLS certificate verification (self-signed certs) |
 
-`command` and `url` are mutually exclusive — exactly one must be set per entry.
+### `servers` entries — local mode
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | yes | — | Unique prefix for this server's tools (no underscores) |
+| `timeout` | no | `30s` | Default timeout for all tools in this block |
+| `local` | yes | — | List of tool definitions (see below) |
+
+**Local tool fields — exec mode** (set `command`):
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `tool` | yes | Tool name (no underscores, unique within server) |
+| `description` | no | Shown to MCP clients |
+| `command` | yes | Binary to run (absolute path or PATH-resolvable) |
+| `args` | no | Fixed command-line arguments |
+| `timeout` | no | Overrides the server-level default for this tool |
+
+**Local tool fields — http mode** (set `url`):
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `tool` | yes | — | Tool name (no underscores, unique within server) |
+| `description` | no | — | Shown to MCP clients |
+| `url` | yes | — | HTTP endpoint to call |
+| `method` | no | `GET` | HTTP method |
+| `headers` | no | _(empty)_ | HTTP headers sent on every request |
+| `body` | no | _(empty)_ | Request body (useful with POST/PUT) |
+| `timeout` | no | server default | Overrides the server-level default for this tool |
+
+`command`, `url`, and `local` are mutually exclusive — exactly one must be set per server entry.
+For local tools, `command` and `url` are mutually exclusive within each tool.
 
 ---
 
@@ -305,14 +359,16 @@ Parent client (Claude Code, etc.)
         router.Router
         (unified name → client mapping)
                │
-       ┌───────┴──────────┐
-       │                  │
-child.Client         network.Client
-(stdio transport)    (HTTP/SSE transport)
-       │                  │
-  subprocess          remote server
-  (auto-restart)      (retry on disconnect)
-                      (GET push stream)
+       ┌───────┼──────────────┐
+       │       │              │
+child.Client  network.Client  local.Client
+(stdio)       (HTTP/SSE)      (exec / http)
+       │       │              │
+  subprocess  remote server  os/exec or
+  (auto-restart) (retry on   http.Client
+               disconnect)
+               (GET push
+               stream)
 ```
 
 ---

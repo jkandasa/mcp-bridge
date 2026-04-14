@@ -68,14 +68,14 @@ type TLSSettings struct {
 	AutoCert bool `yaml:"auto_cert"`
 }
 
-// ServerConfig describes one MCP server — either a local stdio binary or a
-// remote network server. Exactly one of Command or URL must be set.
+// ServerConfig describes one MCP server — stdio, network, or local.
+// Exactly one of Command, URL, or Local must be set.
 type ServerConfig struct {
 	// Name is used as the tool-name prefix (e.g. "git" → "git_status").
 	// Must be unique across all servers. Must not contain underscores.
 	Name string `yaml:"name"`
 
-	// --- stdio mode (Command must be set, URL must be empty) ---
+	// --- stdio mode (Command must be set, URL and Local must be empty) ---
 
 	// Command is the absolute (or PATH-resolvable) path to the binary.
 	Command string `yaml:"command"`
@@ -88,7 +88,7 @@ type ServerConfig struct {
 	// override or extend it.
 	Env []string `yaml:"env"`
 
-	// --- network mode (URL must be set, Command must be empty) ---
+	// --- network mode (URL must be set, Command and Local must be empty) ---
 
 	// URL is the HTTP(S) MCP endpoint of a remote network server.
 	// Example: "http://remote-host:9000/mcp"
@@ -114,6 +114,59 @@ type ServerConfig struct {
 	// otherwise untrusted certificate and you accept the security implications.
 	// Defaults to false.
 	Insecure bool `yaml:"insecure"`
+
+	// --- local mode (Local must be non-empty, Command and URL must be empty) ---
+
+	// Timeout is the default execution timeout for all local tools in this
+	// server block. Accepts Go duration strings (e.g. "30s").
+	// Defaults to "30s". Individual tools may override this with their own
+	// timeout field.
+	Timeout string `yaml:"timeout"`
+
+	// Local lists the tools exposed by this local server. Each tool is either
+	// an exec command (set command) or an HTTP request (set url).
+	Local []LocalTool `yaml:"local"`
+}
+
+// LocalTool defines a single tool in a local server block.
+// Exactly one of Command or URL must be set.
+type LocalTool struct {
+	// Tool is the tool name exposed to MCP clients (prefixed with the server
+	// name, e.g. "sysadmin_list_tmp_files").
+	// Must be unique within the server. Must not contain underscores.
+	Tool string `yaml:"tool"`
+
+	// Description is a human-readable description shown to MCP clients.
+	Description string `yaml:"description"`
+
+	// Timeout overrides the server-level default timeout for this tool.
+	// Accepts Go duration strings (e.g. "10s"). Defaults to the server-level
+	// timeout (which itself defaults to "30s").
+	Timeout string `yaml:"timeout"`
+
+	// --- exec mode (Command must be set, URL must be empty) ---
+
+	// Command is the binary to run (absolute path or PATH-resolvable).
+	Command string `yaml:"command"`
+
+	// Args are the arguments passed to the command. Fixed at config time;
+	// callers cannot supply additional arguments.
+	Args []string `yaml:"args"`
+
+	// --- http mode (URL must be set, Command must be empty) ---
+
+	// URL is the HTTP endpoint to call.
+	URL string `yaml:"url"`
+
+	// Method is the HTTP method (GET, POST, PUT, DELETE, etc.).
+	// Defaults to "GET".
+	Method string `yaml:"method"`
+
+	// Headers contains HTTP headers sent on every request.
+	Headers map[string]string `yaml:"headers"`
+
+	// Body is an optional request body (used with POST/PUT).
+	Body string `yaml:"body"`
 }
 
 // RetryIntervalDuration parses RetryInterval and returns the duration.
@@ -126,6 +179,24 @@ func (s *ServerConfig) RetryIntervalDuration() time.Duration {
 // Returns the default (30s) if the field is empty or invalid.
 func (s *ServerConfig) RequestTimeoutDuration() time.Duration {
 	return parseDurationDefault(s.RequestTimeout, 30*time.Second)
+}
+
+// TimeoutDuration parses Timeout and returns the duration.
+// Returns the default (30s) if the field is empty or invalid.
+// Used as the default timeout for all local tools in this server block.
+func (s *ServerConfig) TimeoutDuration() time.Duration {
+	return parseDurationDefault(s.Timeout, 30*time.Second)
+}
+
+// ToolTimeoutDuration returns the effective timeout for a local tool:
+// the tool's own Timeout if set, otherwise the server-level default.
+func (s *ServerConfig) ToolTimeoutDuration(t *LocalTool) time.Duration {
+	if t.Timeout != "" {
+		if d, err := time.ParseDuration(t.Timeout); err == nil && d > 0 {
+			return d
+		}
+	}
+	return s.TimeoutDuration()
 }
 
 func parseDurationDefault(s string, def time.Duration) time.Duration {
@@ -200,14 +271,22 @@ func (c *Config) validate() error {
 			return fmt.Errorf("server %q: name must not contain underscores", s.Name)
 		}
 
-		// Exactly one of command or url must be set.
 		hasCommand := s.Command != ""
 		hasURL := s.URL != ""
+		hasLocal := len(s.Local) > 0
+
+		// Mutual exclusion across all three modes.
 		if hasCommand && hasURL {
-			return fmt.Errorf("server %q: command and url are mutually exclusive; set one or the other", s.Name)
+			return fmt.Errorf("server %q: command and url are mutually exclusive; set exactly one of command, url, or local", s.Name)
 		}
-		if !hasCommand && !hasURL {
-			return fmt.Errorf("server %q: one of command (stdio) or url (network) is required", s.Name)
+		if hasCommand && hasLocal {
+			return fmt.Errorf("server %q: command and local are mutually exclusive; set exactly one of command, url, or local", s.Name)
+		}
+		if hasURL && hasLocal {
+			return fmt.Errorf("server %q: url and local are mutually exclusive; set exactly one of command, url, or local", s.Name)
+		}
+		if !hasCommand && !hasURL && !hasLocal {
+			return fmt.Errorf("server %q: one of command (stdio), url (network), or local is required", s.Name)
 		}
 
 		// Validate duration fields for network servers.
@@ -220,6 +299,43 @@ func (c *Config) validate() error {
 			if s.RequestTimeout != "" {
 				if d, err := time.ParseDuration(s.RequestTimeout); err != nil || d <= 0 {
 					return fmt.Errorf("server %q: request_timeout %q is not a valid positive duration", s.Name, s.RequestTimeout)
+				}
+			}
+		}
+
+		// Validate local tools.
+		if hasLocal {
+			if s.Timeout != "" {
+				if d, err := time.ParseDuration(s.Timeout); err != nil || d <= 0 {
+					return fmt.Errorf("server %q: timeout %q is not a valid positive duration", s.Name, s.Timeout)
+				}
+			}
+			seenTools := make(map[string]struct{}, len(s.Local))
+			for j, t := range s.Local {
+				if t.Tool == "" {
+					return fmt.Errorf("server %q: local[%d]: tool name is required", s.Name, j)
+				}
+				if strings.Contains(t.Tool, "_") {
+					return fmt.Errorf("server %q: local tool %q: tool name must not contain underscores", s.Name, t.Tool)
+				}
+				if _, dup := seenTools[t.Tool]; dup {
+					return fmt.Errorf("server %q: duplicate local tool name %q", s.Name, t.Tool)
+				}
+				seenTools[t.Tool] = struct{}{}
+
+				hasToolCmd := t.Command != ""
+				hasToolURL := t.URL != ""
+				if hasToolCmd && hasToolURL {
+					return fmt.Errorf("server %q: local tool %q: command and url are mutually exclusive; set exactly one", s.Name, t.Tool)
+				}
+				if !hasToolCmd && !hasToolURL {
+					return fmt.Errorf("server %q: local tool %q: one of command (exec) or url (http) is required", s.Name, t.Tool)
+				}
+
+				if t.Timeout != "" {
+					if d, err := time.ParseDuration(t.Timeout); err != nil || d <= 0 {
+						return fmt.Errorf("server %q: local tool %q: timeout %q is not a valid positive duration", s.Name, t.Tool, t.Timeout)
+					}
 				}
 			}
 		}

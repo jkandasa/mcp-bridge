@@ -26,9 +26,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ---- runtime stage ----
 FROM scratch
 
-# Copy the binary and a default config.
+# Copy the binary.
 COPY --from=builder /out/mcp-bridge /usr/local/bin/mcp-bridge
-COPY config.yaml /etc/mcp-bridge/config.yaml
 
 # OCI image labels.
 ARG VERSION=dev
@@ -44,4 +43,6 @@ LABEL org.opencontainers.image.version="${VERSION}" \
 # mcp-bridge listens on HTTP(S) — expose the default port.
 EXPOSE 7575
 
+# Config must be mounted at runtime, e.g.:
+#   docker run -v /path/to/config.yaml:/etc/mcp-bridge/config.yaml mcp-bridge
 ENTRYPOINT ["/usr/local/bin/mcp-bridge", "-config", "/etc/mcp-bridge/config.yaml"]

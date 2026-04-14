@@ -1,5 +1,6 @@
 # mcp-bridge
 
+[![SafeSkill 93/100](https://img.shields.io/badge/SafeSkill-93%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/jkandasa-mcp-bridge)
 A production-grade MCP bridge server that aggregates any number of MCP servers
 — local stdio binaries **and** remote HTTP(S) network servers — and exposes
 them all through a single unified HTTP(S) endpoint.

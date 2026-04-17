@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 // ---------------------------------------------------------------------------
@@ -204,9 +205,18 @@ type ContentItem struct {
 }
 
 // ToolCallResult is the response body for tools/call.
+// When Stream is non-nil the result is being delivered as a server-sent event
+// stream. The caller must copy Stream directly to the HTTP response as
+// text/event-stream and close it when done. Content and IsError are unused
+// in that case — they live inside the SSE events themselves.
 type ToolCallResult struct {
 	Content []ContentItem `json:"content"`
 	IsError bool          `json:"isError,omitempty"`
+
+	// Stream is set (non-nil) only when the upstream server replied with
+	// text/event-stream. The reader delivers raw SSE bytes that must be
+	// forwarded verbatim to the parent client. Callers must close it.
+	Stream io.ReadCloser `json:"-"`
 }
 
 // WrapperInfo identifies this bridge server to clients.

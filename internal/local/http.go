@@ -14,25 +14,54 @@ import (
 // callHTTP fires a configured HTTP request and returns the response body as
 // the tool result.
 //
+// When the tool has Params set, {{name}} placeholders in the URL, header
+// values, and body are expanded using the provided arguments map.
+// When Params is empty, no arguments are accepted (returns an error if any
+// are passed).
+//
 // Non-2xx status → IsError: true. The response body is still returned so the
-// caller can see the error detail from the server.
-func callHTTP(ctx context.Context, t *config.LocalTool) (*mcp.ToolCallResult, error) {
+// caller can inspect the server-side error detail.
+func callHTTP(ctx context.Context, t *config.LocalTool, arguments map[string]any) (*mcp.ToolCallResult, error) {
 	method := strings.ToUpper(t.Method)
 	if method == "" {
 		method = http.MethodGet
 	}
 
-	var bodyReader io.Reader
-	if t.Body != "" {
-		bodyReader = strings.NewReader(t.Body)
+	urlStr := t.URL
+	body := t.Body
+	headers := make(map[string]string, len(t.Headers))
+
+	if len(t.Params) > 0 {
+		// Named params mode: expand {{name}} placeholders.
+		urlStr = expandString(t.URL, arguments)
+		body = expandString(t.Body, arguments)
+		for k, v := range t.Headers {
+			headers[k] = expandString(v, arguments)
+		}
+	} else {
+		// No-arg mode: reject any supplied arguments.
+		if len(arguments) > 0 {
+			return nil, &mcp.RPCError{
+				Code:    mcp.CodeInvalidParams,
+				Message: fmt.Sprintf("local tool %q does not accept arguments", t.Tool),
+			}
+		}
+		for k, v := range t.Headers {
+			headers[k] = v
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, t.URL, bodyReader)
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to build request: %v", err)), nil
 	}
 
-	for k, v := range t.Headers {
+	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
@@ -45,12 +74,12 @@ func callHTTP(ctx context.Context, t *config.LocalTool) (*mcp.ToolCallResult, er
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to read response body: %v", err)), nil
 	}
 
-	text := strings.TrimRight(string(body), "\n")
+	text := strings.TrimRight(string(respBody), "\n")
 	if text == "" {
 		text = "(empty response body)"
 	}

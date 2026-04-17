@@ -144,6 +144,12 @@ func (c *Client) Initialize(ctx context.Context) error {
 // CallTool sends tools/call to the remote server. toolName must be the
 // original (un-prefixed) name. extraHeaders contains MCP-layer HTTP headers
 // from the parent request (e.g. Mcp-Session-Id) to forward to the remote.
+//
+// When the remote responds with text/event-stream (streaming result), the
+// returned ToolCallResult has Stream set to the live response body. The caller
+// must copy Stream to the HTTP response verbatim and then close it. For plain
+// application/json responses the Stream field is nil and Content/IsError are
+// populated as usual.
 func (c *Client) CallTool(ctx context.Context, toolName string, arguments map[string]any, extraHeaders map[string]string) (*mcp.ToolCallResult, error) {
 	c.mu.RLock()
 	ready := c.ready
@@ -153,9 +159,14 @@ func (c *Client) CallTool(ctx context.Context, toolName string, arguments map[st
 	}
 
 	params := mcp.ToolCallParams{Name: toolName, Arguments: arguments}
-	raw, _, err := c.doRequest(ctx, "tools/call", params, extraHeaders)
+	stream, raw, _, err := c.doToolCall(ctx, params, extraHeaders)
 	if err != nil {
 		return nil, err
+	}
+
+	// Streaming response — hand the body directly to the caller.
+	if stream != nil {
+		return &mcp.ToolCallResult{Stream: stream}, nil
 	}
 
 	var result mcp.ToolCallResult
@@ -604,6 +615,78 @@ func (c *Client) applyHeaders(req *http.Request, extra map[string]string) {
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}
+}
+
+// doToolCall is a specialised variant of doRequest used only for tools/call.
+// When the remote responds with text/event-stream it returns the response body
+// as stream (non-nil) without buffering. The caller is responsible for closing
+// it. For application/json responses stream is nil and raw contains the result.
+func (c *Client) doToolCall(ctx context.Context, params mcp.ToolCallParams, extraHeaders map[string]string) (stream io.ReadCloser, raw json.RawMessage, respHeader http.Header, err error) {
+	log := logger.L().With(zap.String("server", c.name))
+
+	id := c.idCounter.Add(1)
+	mcpID := mcp.NumberID(id)
+	req := &mcp.Request{
+		JSONRPC: mcp.JSONRPC,
+		ID:      &mcpID,
+		Method:  "tools/call",
+	}
+	reqRaw, err := json.Marshal(params)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("marshal params: %w", err)
+	}
+	req.Params = reqRaw
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("marshal request: %w", err)
+	}
+	log.Debug("network request (tools/call)", zap.String("body", string(body)))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	c.applyHeaders(httpReq, extraHeaders)
+
+	// Use streamClient (no timeout) so long-running tool streams are not cut off.
+	httpResp, err := c.streamClient.Do(httpReq)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("POST %s: %w", c.url, err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(httpResp.Body, 4096))
+		httpResp.Body.Close()
+		return nil, nil, httpResp.Header, fmt.Errorf("HTTP %d: %s", httpResp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	ct := httpResp.Header.Get("Content-Type")
+
+	if strings.HasPrefix(ct, "text/event-stream") {
+		// Streaming response — return the live body to the caller.
+		log.Debug("tools/call: remote is streaming (text/event-stream)")
+		return httpResp.Body, nil, httpResp.Header, nil
+	}
+
+	if strings.HasPrefix(ct, "application/json") {
+		defer httpResp.Body.Close()
+		var rpcResp mcp.Response
+		if err := json.NewDecoder(httpResp.Body).Decode(&rpcResp); err != nil {
+			return nil, nil, httpResp.Header, fmt.Errorf("decode JSON response: %w", err)
+		}
+		respBytes, _ := json.Marshal(&rpcResp)
+		log.Debug("network response (tools/call)", zap.String("body", string(respBytes)))
+		if rpcResp.Error != nil {
+			return nil, nil, httpResp.Header, rpcResp.Error
+		}
+		return nil, rpcResp.Result, httpResp.Header, nil
+	}
+
+	httpResp.Body.Close()
+	return nil, nil, httpResp.Header, fmt.Errorf("unexpected Content-Type %q", ct)
 }
 
 // ---------------------------------------------------------------------------

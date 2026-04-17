@@ -28,7 +28,8 @@ tools through one endpoint that any MCP client can reach over the network.
   local exec/HTTP tools in the same config file; mix and match freely.
 - **Local tools** — define shell commands and HTTP requests directly in config;
   exposed as MCP tools with no external process required. Per-tool and
-  per-server configurable timeouts (default 30 s).
+  per-server configurable timeouts (default 30 s). Named parameters with
+  `{{name}}` template substitution; array params expand to multiple arguments.
 - **Full MCP Streamable HTTP transport** — POST, DELETE, and transparent
   `Mcp-Session-Id` / `MCP-Protocol-Version` header proxying.
 - **SSE response handling** — remote servers may reply with
@@ -107,14 +108,12 @@ servers:
     local:
       - tool: list_tmp_files
         description: "List files in /tmp"
-        command: ls
-        args: ["-alh", "/tmp"]
+        command: "ls -alh /tmp"
         timeout: "10s"    # overrides server-level default
 
       - tool: disk_usage
         description: "Disk usage of root filesystem"
-        command: df
-        args: ["-h", "/"]
+        command: "df -h /"
 
       - tool: get_weather
         description: "Current weather for London"
@@ -143,7 +142,7 @@ servers:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Unique prefix for this server's tools (no underscores) |
+| `name` | yes | Unique prefix for this server's tools  |
 | `command` | yes | Path to the MCP server binary |
 | `args` | no | Command-line arguments passed to the binary |
 | `env` | no | `KEY=VALUE` pairs added to the child's environment |
@@ -152,7 +151,7 @@ servers:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `name` | yes | — | Unique prefix for this server's tools (no underscores) |
+| `name` | yes | — | Unique prefix for this server's tools  |
 | `url` | yes | — | HTTP(S) MCP endpoint, e.g. `http://host:9000/mcp` |
 | `headers` | no | _(empty)_ | HTTP headers sent on every request (auth, API keys, etc.) |
 | `retry_interval` | no | `30s` | Delay between reconnection attempts when unreachable |
@@ -163,7 +162,7 @@ servers:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `name` | yes | — | Unique prefix for this server's tools (no underscores) |
+| `name` | yes | — | Unique prefix for this server's tools  |
 | `timeout` | no | `30s` | Default timeout for all tools in this block |
 | `local` | yes | — | List of tool definitions (see below) |
 
@@ -171,26 +170,114 @@ servers:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `tool` | yes | Tool name (no underscores, unique within server) |
+| `tool` | yes | Tool name (unique within server) |
 | `description` | no | Shown to MCP clients |
-| `command` | yes | Binary to run (absolute path or PATH-resolvable) |
-| `args` | no | Fixed command-line arguments |
+| `command` | yes | Command line as a **string** (`"ls -alh {{path}}"`, split on whitespace) or a **list** (`["sh", "-c", "find {{p}} \| wc -l"]`). Use list form when a token contains spaces or you need an explicit shell pipeline. Shell metacharacters (`\|`, `&`, `;`, `>`, …) in **string** form run via `sh -c` automatically; list form always executes directly. Supports `{{name}}` placeholders when `params` is set. |
+| `params` | no | Named parameters — see [Named parameters](#named-parameters) below |
 | `timeout` | no | Overrides the server-level default for this tool |
+
+Tools without `params` run a fixed command and accept no runtime arguments.
 
 **Local tool fields — http mode** (set `url`):
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `tool` | yes | — | Tool name (no underscores, unique within server) |
+| `tool` | yes | — | Tool name (unique within server) |
 | `description` | no | — | Shown to MCP clients |
-| `url` | yes | — | HTTP endpoint to call |
+| `url` | yes | — | HTTP endpoint; supports `{{name}}` placeholders |
 | `method` | no | `GET` | HTTP method |
-| `headers` | no | _(empty)_ | HTTP headers sent on every request |
-| `body` | no | _(empty)_ | Request body (useful with POST/PUT) |
+| `headers` | no | _(empty)_ | HTTP headers; values support `{{name}}` placeholders |
+| `body` | no | _(empty)_ | Request body; supports `{{name}}` placeholders |
+| `params` | no | — | Named parameters — see [Named parameters](#named-parameters) below |
 | `timeout` | no | server default | Overrides the server-level default for this tool |
 
 `command`, `url`, and `local` are mutually exclusive — exactly one must be set per server entry.
 For local tools, `command` and `url` are mutually exclusive within each tool.
+
+---
+
+### Named parameters
+
+Add a `params` list to any local tool to expose named, typed parameters and
+enable `{{name}}` template substitution in `command`, `args`, `url`, `headers`,
+and `body`.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Parameter name; use as `{{name}}` in templates |
+| `description` | no | Shown to MCP clients in the tool's input schema |
+| `type` | no | `string` (default), `array`, `integer`, `number`, `boolean` |
+| `required` | no | Mark as required in the JSON Schema (default: `false`) |
+
+**Array parameters** — a standalone `{{name}}` token (the whole token, nothing
+else) whose value is an array expands into one argument per element. An
+`{{name}}` placeholder embedded within a larger token (e.g.
+`--filter={{tags}}`) joins array elements with commas instead.
+
+**Examples:**
+
+```yaml
+  - name: tools
+    local:
+      # exec — named string param
+      - tool: list_path
+        description: "List any directory"
+        command: "ls -alh {{path}}"
+        params:
+          - name: path
+            description: "Directory to list"
+            type: string
+            required: true
+        # tools/call: {"path": "/var/log"}
+
+      # exec — array param (standalone token → multiple args)
+      - tool: du_multi
+        description: "Disk usage of multiple paths"
+        command: "du -sh {{paths}}"
+        params:
+          - name: paths
+            type: array
+            required: true
+        # tools/call: {"paths": ["/tmp", "/var/log", "/home"]}
+        # runs:      du -sh /tmp /var/log /home
+
+      # exec — shell pipeline (list form with sh -c)
+      - tool: count_files
+        description: "Count files matching a pattern"
+        command: ["sh", "-c", "find {{path}} -name {{pattern}} | wc -l"]
+        params:
+          - name: path
+            type: string
+            required: true
+          - name: pattern
+            type: string
+            required: true
+        # tools/call: {"path": "/var/log", "pattern": "*.log"}
+
+      # http — named params in URL, headers, and body
+      - tool: create_item
+        description: "Create an item via API"
+        url: "https://api.example.com/{{resource}}"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{token}}"
+        body: '{"name": "{{name}}", "value": "{{value}}"}'
+        params:
+          - name: resource
+            type: string
+            required: true
+          - name: token
+            type: string
+            required: true
+          - name: name
+            type: string
+            required: true
+          - name: value
+            type: string
+            required: true
+        # tools/call: {"resource": "items", "token": "abc", "name": "widget", "value": "42"}
+```
 
 ---
 
@@ -250,8 +337,7 @@ server name: "git"    original tool: "status"    → unified: "git_status"
 server name: "remote" original tool: "web_search" → unified: "remote_web_search"
 ```
 
-Server names must not contain underscores. Original tool names may contain
-underscores freely.
+Server names must be unique. There are no character restrictions.
 
 ---
 

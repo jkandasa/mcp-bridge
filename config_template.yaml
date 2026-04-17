@@ -6,7 +6,6 @@
 # server — mcp-bridge listener and security settings
 # ---------------------------------------------------------------------------
 server:
-
   # Directory for persistent data (TLS certificates, etc.).
   # Created automatically if it does not exist.
   # Default: "./.mcp-bridge"
@@ -56,7 +55,7 @@ server:
 # Example: server name "git", tool "status"  →  unified name "git_status"
 #
 # Rules for all modes:
-#   - name  must be unique and must NOT contain underscores
+#   - name  must be unique across all servers
 #
 # ---------------------------------------------------------------------------
 # Mode A: stdio — launch a local binary as a subprocess
@@ -64,7 +63,7 @@ server:
 # The process is started by mcp-bridge and restarted automatically with
 # exponential back-off (500 ms → 30 s) if it crashes.
 #
-#   name     required  unique identifier (no underscores)
+#   name     required  unique identifier
 #   command  required  absolute path or PATH-resolvable binary
 #   args     optional  command-line arguments for the binary
 #   env      optional  KEY=VALUE pairs added to the child environment
@@ -76,7 +75,7 @@ server:
 # The remote server must already be running and reachable.  mcp-bridge will
 # retry the connection in the background if it is unreachable at startup.
 #
-#   name             required  unique identifier (no underscores)
+#   name             required  unique identifier
 #   url              required  HTTP(S) MCP endpoint, e.g. http://host:9000/mcp
 #   headers          optional  HTTP headers sent on every request (auth, etc.)
 #   retry_interval   optional  delay between reconnection attempts (default: 30s)
@@ -96,25 +95,42 @@ server:
 # ---------------------------------------------------------------------------
 # Tools are defined entirely in config — no external process or server needed.
 # Each tool is either an exec command (set "command") or an HTTP call (set
-# "url"). Arguments are fixed at config time; callers cannot supply extra args.
+# "url").
 #
-#   name     required  unique identifier (no underscores)
+#   name     required  unique identifier
 #   timeout  optional  default timeout for all tools in this block (default: 30s)
 #                      individual tools may override this with their own timeout
 #
-#   local[].tool         required  tool name (no underscores, unique within server)
+#   local[].tool         required  tool name (unique within server)
 #   local[].description  optional  shown to MCP clients
 #   local[].timeout      optional  overrides the server-level default for this tool
+#   local[].params       optional  named parameters (see below); when set, enables
+#                                  {{name}} template substitution
 #
 #   exec mode (set "command"):
-#     local[].command  required  binary to run (absolute or PATH-resolvable)
-#     local[].args     optional  fixed command-line arguments
+#     local[].command  required  command line — string OR list of strings.
+#                                String: "ls -alh {{path}}"  → tokens split on whitespace.
+#                                List:   ["sh", "-c", "cmd | wc -l"]  → tokens as given.
+#                                Use list form when a token contains spaces or you need
+#                                an explicit shell pipeline.
+#                                Shell metacharacters (|, &, ;, >, etc.) in STRING form
+#                                cause the entire string to run via sh -c automatically.
+#                                List form always executes directly — no metachar detection.
+#                                Tools without params accept no runtime arguments.
 #
 #   http mode (set "url"):
-#     local[].url      required  HTTP endpoint to call
+#     local[].url      required  HTTP endpoint; supports {{name}} placeholders
 #     local[].method   optional  HTTP method (default: GET)
-#     local[].headers  optional  HTTP headers sent on every request
-#     local[].body     optional  request body (useful with POST/PUT)
+#     local[].headers  optional  HTTP headers; values support {{name}} placeholders
+#     local[].body     optional  request body; supports {{name}} placeholders
+#
+#   params — named parameters for {{name}} template substitution:
+#     params[].name         required  parameter name (used as {{name}} in templates)
+#     params[].description  optional  shown to MCP clients in the tool input schema
+#     params[].type         optional  string (default) | array | integer | number | boolean
+#                                     array type: standalone {{name}} token expands to N
+#                                     arguments; embedded {{name}} joins with commas
+#     params[].required     optional  mark the parameter as required (default: false)
 
 servers:
 # Uncomment and configure each server you want to enable.
@@ -166,34 +182,114 @@ servers:
 #  - name: sysadmin
 #    timeout: "30s"              # default timeout for all tools; individual tools may override
 #    local:
-#      # exec tool — runs a local command
-#      - tool: list_tmp_files
-#        description: "List files in /tmp"
-#        command: ls
-#        args: ["-alh", "/tmp"]
-#        timeout: "10s"          # overrides the server-level 30s for this tool only
 #
-#      # exec tool — no per-tool timeout, falls back to server-level 30s
+#      # ── exec tool: fixed command, no params ────────────────────────────────
+#      - tool: list_tmp
+#        description: "List files in /tmp"
+#        command: "ls -alh /tmp"
+#        timeout: "10s"
+#
+#      # ── exec tool: named param (string) ────────────────────────────────────
+#      # Callers pass: {"path": "/var/log"}
+#      - tool: list_path
+#        description: "List files in any directory"
+#        command: "ls -alh {{path}}"
+#        params:
+#          - name: path
+#            description: "Directory path to list"
+#            type: string
+#            required: true
+#
+#      # ── exec tool: multiple named params ───────────────────────────────────
+#      # Callers pass: {"path": "/var/log", "pattern": "*.log"}
+#      - tool: find_files
+#        description: "Find files matching a pattern"
+#        command: "find {{path}} -name {{pattern}}"
+#        params:
+#          - name: path
+#            description: "Directory to search"
+#            type: string
+#            required: true
+#          - name: pattern
+#            description: "Filename pattern (e.g. *.log)"
+#            type: string
+#            required: true
+#
+#      # ── exec tool: array param (standalone token expands to N args) ────────
+#      # Callers pass: {"paths": ["/tmp", "/var/log", "/home"]}
+#      # {{paths}} is a standalone token → expands to three separate arguments.
+#      - tool: du_multi
+#        description: "Show disk usage of one or more paths"
+#        command: "du -sh {{paths}}"
+#        params:
+#          - name: paths
+#            description: "One or more paths to check"
+#            type: array
+#            required: true
+#
+#      # ── exec tool: shell pipeline via list form ─────────────────────────────
+#      # Use ["sh", "-c", "..."] when you need pipes, redirects, or other shell
+#      # features. {{name}} substitution works inside the shell string.
+#      # Callers pass: {"path": "/var/log", "pattern": "error"}
+#      - tool: grep_logs
+#        description: "Count lines matching a pattern in a directory"
+#        command: ["sh", "-c", "grep -rl {{pattern}} {{path}} | wc -l"]
+#        params:
+#          - name: path
+#            description: "Directory to search"
+#            type: string
+#            required: true
+#          - name: pattern
+#            description: "Pattern to search for"
+#            type: string
+#            required: true
+#
+#      # ── exec tool: fixed command, no params ────────────────────────────────
 #      - tool: disk_usage
 #        description: "Show disk usage of the root filesystem"
-#        command: df
-#        args: ["-h", "/"]
+#        command: "df -h /"
 #
-#      # http tool — HTTP GET request
-#      - tool: get_weather
-#        description: "Current weather for London (JSON)"
+#      # ── http tool: no params ────────────────────────────────────────────────
+#      - tool: london_weather
+#        description: "Current weather for London"
 #        url: https://wttr.in/London?format=j1
 #        method: GET
 #        headers:
 #          Accept: application/json
 #        timeout: "15s"
 #
-#      # http tool — HTTP POST with a body
-#      - tool: notify_webhook
-#        description: "Send a ping to the internal webhook"
-#        url: https://internal-host/webhook
+#      # ── http tool: named param in URL ───────────────────────────────────────
+#      # Callers pass: {"city": "Tokyo"}
+#      - tool: get_weather
+#        description: "Get current weather for any city"
+#        url: "https://wttr.in/{{city}}?format=3"
+#        method: GET
+#        params:
+#          - name: city
+#            description: "City name"
+#            type: string
+#            required: true
+#
+#      # ── http tool: named params in URL, headers, and body ──────────────────
+#      # Callers pass: {"resource": "items", "token": "abc123", "name": "widget", "value": "42"}
+#      - tool: create_item
+#        description: "Create an item via API"
+#        url: "https://api.example.com/{{resource}}"
 #        method: POST
 #        headers:
 #          Content-Type: application/json
-#          Authorization: "Bearer secret"
-#        body: '{"event":"ping"}'
+#          Authorization: "Bearer {{token}}"
+#        body: '{"name": "{{name}}", "value": "{{value}}"}'
+#        params:
+#          - name: resource
+#            type: string
+#            required: true
+#          - name: token
+#            type: string
+#            required: true
+#          - name: name
+#            type: string
+#            required: true
+#          - name: value
+#            type: string
+#            required: true

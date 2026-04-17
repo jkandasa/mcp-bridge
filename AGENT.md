@@ -104,7 +104,7 @@ server:
     key_file: ""         # path to PEM key
 
 servers:
-  - name: myserver       # must be unique, no underscores
+  - name: myserver       # must be unique
     command: /path/to/binary   # stdio mode
     args: []
     env:
@@ -121,33 +121,74 @@ servers:
   - name: sysadmin       # local mode
     timeout: "30s"       # default for all tools; individual tools may override
     local:
-      - tool: list_tmp   # exec tool — command + args, fixed at config time
+      - tool: list_tmp   # exec tool — fixed command, no params, no runtime args
         description: "List /tmp"
-        command: ls
-        args: ["-alh", "/tmp"]
+        command: "ls -alh /tmp"
         timeout: "10s"   # overrides server-level default
-      - tool: get_status # http tool — url + method + headers + body
+
+      - tool: list_path  # exec tool — named param, string type
+        description: "List any directory"
+        command: "ls -alh {{path}}"  # {{path}} expanded before exec
+        params:
+          - name: path
+            description: "Directory path"
+            type: string
+            required: true
+
+      - tool: find_files # exec tool — shell pipeline via list form
+        description: "Find files matching a pattern"
+        command: ["sh", "-c", "find {{path}} -name {{pattern}} | wc -l"]
+        params:
+          - name: path
+            type: string
+            required: true
+          - name: pattern
+            type: string
+            required: true
+
+      - tool: du_multi   # exec tool — array param (expands to N args)
+        description: "Disk usage of multiple paths"
+        command: "du -sh {{paths}}"
+        params:
+          - name: paths
+            type: array
+            required: true
+
+      - tool: get_status # http tool — no params
         description: "Check status endpoint"
         url: http://internal-host/status
         method: GET
+
+      - tool: get_weather # http tool — named param in URL
+        description: "Get weather for any city"
+        url: "https://wttr.in/{{city}}?format=3"
+        params:
+          - name: city
+            type: string
+            required: true
+
+# tools/call example with params:
+#   {"path": "/var/log", "pattern": "*.log"}
 ```
 
 ### Validation rules (enforced by `config.Load`)
-- `server.name` must be unique and must not contain underscores
+- `server.name` must be unique across all servers
 - Exactly one of `command` (stdio), `url` (network), or `local` (local) per server entry — all three are mutually exclusive
 - Within a local server, each tool must have exactly one of `command` or `url` — mutually exclusive
-- Local tool names must be unique within the server and must not contain underscores
+- Local tool names must be unique within the server
 - `retry_interval` and `request_timeout` must be valid positive Go duration strings
 - `timeout` (server-level and per-tool) must be a valid positive Go duration string if set
 - `tls.cert_file` and `tls.key_file` must be set together
 - At least one server must be configured
+- Within each local tool, param names must be unique
+- Param `type` must be one of: `string`, `array`, `integer`, `number`, `boolean` (empty defaults to `string`)
 
 ---
 
 ## Architecture decisions
 
 ### Tool namespacing
-Every tool is exposed as `<server_name>_<original_tool_name>`. The router strips the prefix before forwarding. Server names must not contain underscores so the prefix boundary is unambiguous.
+Every tool is exposed as `<server_name>_<original_tool_name>`. The router uses a hash map keyed by the full unified name — no string splitting occurs. Server names must be unique; there are no character restrictions.
 
 ### Session ID handling
 mcp-bridge is a pure proxy for `Mcp-Session-Id`:

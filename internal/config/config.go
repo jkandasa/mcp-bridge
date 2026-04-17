@@ -72,7 +72,7 @@ type TLSSettings struct {
 // Exactly one of Command, URL, or Local must be set.
 type ServerConfig struct {
 	// Name is used as the tool-name prefix (e.g. "git" → "git_status").
-	// Must be unique across all servers. Must not contain underscores.
+	// Must be unique across all servers.
 	Name string `yaml:"name"`
 
 	// --- stdio mode (Command must be set, URL and Local must be empty) ---
@@ -125,7 +125,68 @@ type ServerConfig struct {
 
 	// Local lists the tools exposed by this local server. Each tool is either
 	// an exec command (set command) or an HTTP request (set url).
+	// Exec tools may also receive runtime arguments via tools/call.arguments.args.
 	Local []LocalTool `yaml:"local"`
+}
+
+// CommandTokens holds a command as an ordered list of tokens.
+// In YAML it accepts either a scalar string (split on whitespace) or a
+// sequence of strings.
+//
+//	Scalar: "ls -alh {{path}}"          → tokens ["ls", "-alh", "{{path}}"]
+//	List:   ["sh", "-c", "cmd | wc -l"] → tokens as given
+//
+// Use scalar form for simple commands. Use list form when a token contains
+// spaces or you need an explicit shell pipeline (["sh", "-c", "..."]).
+// Metacharacter detection (|, &, ;, >, etc.) applies only to scalar form.
+type CommandTokens struct {
+	Tokens []string // split tokens
+	Raw    string   // original scalar string; empty when parsed from a YAML sequence
+}
+
+// IsEmpty reports whether the command has no tokens.
+func (c CommandTokens) IsEmpty() bool { return len(c.Tokens) == 0 }
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+// Accepts a YAML scalar (split on whitespace) or a YAML sequence of strings.
+func (c *CommandTokens) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		c.Raw = value.Value
+		c.Tokens = strings.Fields(value.Value)
+		return nil
+	case yaml.SequenceNode:
+		c.Raw = ""
+		c.Tokens = make([]string, 0, len(value.Content))
+		for i, n := range value.Content {
+			if n.Kind != yaml.ScalarNode {
+				return fmt.Errorf("command[%d]: sequence elements must be strings", i)
+			}
+			c.Tokens = append(c.Tokens, n.Value)
+		}
+		return nil
+	default:
+		return fmt.Errorf("command: must be a string or a list of strings")
+	}
+}
+
+// LocalParam defines a named parameter for a local tool.
+// When a tool has Params, tools/call arguments are matched by name and
+// substituted into {{name}} placeholders in command, args, url, headers,
+// and body. When Params is empty, exec tools fall back to the generic
+// {"args": [...]} positional interface.
+type LocalParam struct {
+	// Name is the parameter name, referenced as {{name}} in templates.
+	Name string `yaml:"name"`
+
+	// Description is shown to MCP clients in the tool's input schema.
+	Description string `yaml:"description"`
+
+	// Type is the JSON Schema type: string (default), array, integer, number, boolean.
+	Type string `yaml:"type"`
+
+	// Required marks this parameter as required in the input schema.
+	Required bool `yaml:"required"`
 }
 
 // LocalTool defines a single tool in a local server block.
@@ -133,7 +194,7 @@ type ServerConfig struct {
 type LocalTool struct {
 	// Tool is the tool name exposed to MCP clients (prefixed with the server
 	// name, e.g. "sysadmin_list_tmp_files").
-	// Must be unique within the server. Must not contain underscores.
+	// Must be unique within the server.
 	Tool string `yaml:"tool"`
 
 	// Description is a human-readable description shown to MCP clients.
@@ -144,18 +205,26 @@ type LocalTool struct {
 	// timeout (which itself defaults to "30s").
 	Timeout string `yaml:"timeout"`
 
+	// Params defines named parameters for {{name}} template substitution.
+	// When set, tools/call arguments are matched by name and substituted into
+	// placeholders in command, args, url, headers, and body.
+	// When empty, exec tools accept {"args": [...]}; HTTP tools accept no arguments.
+	Params []LocalParam `yaml:"params"`
+
 	// --- exec mode (Command must be set, URL must be empty) ---
 
-	// Command is the binary to run (absolute path or PATH-resolvable).
-	Command string `yaml:"command"`
-
-	// Args are the arguments passed to the command. Fixed at config time;
-	// callers cannot supply additional arguments.
-	Args []string `yaml:"args"`
+	// Command is the command to execute as a scalar string or a list of strings.
+	// Scalar: "ls -alh {{path}}"          — split on whitespace.
+	// List:   ["sh", "-c", "cmd | wc -l"] — tokens as given; use when a token
+	//         contains spaces or you need an explicit shell pipeline.
+	// Supports {{name}} placeholders when Params is set.
+	// Shell metacharacters (|, &, ;, >, etc.) in scalar form cause the command
+	// to run via sh -c automatically.
+	Command CommandTokens `yaml:"command"`
 
 	// --- http mode (URL must be set, Command must be empty) ---
 
-	// URL is the HTTP endpoint to call.
+	// URL is the HTTP endpoint to call. Supports {{name}} placeholders when Params is set.
 	URL string `yaml:"url"`
 
 	// Method is the HTTP method (GET, POST, PUT, DELETE, etc.).
@@ -163,9 +232,11 @@ type LocalTool struct {
 	Method string `yaml:"method"`
 
 	// Headers contains HTTP headers sent on every request.
+	// Values support {{name}} placeholders when Params is set.
 	Headers map[string]string `yaml:"headers"`
 
 	// Body is an optional request body (used with POST/PUT).
+	// Supports {{name}} placeholders when Params is set.
 	Body string `yaml:"body"`
 }
 
@@ -267,9 +338,6 @@ func (c *Config) validate() error {
 		if s.Name == "" {
 			return fmt.Errorf("server[%d]: name is required", i)
 		}
-		if strings.Contains(s.Name, "_") {
-			return fmt.Errorf("server %q: name must not contain underscores", s.Name)
-		}
 
 		hasCommand := s.Command != ""
 		hasURL := s.URL != ""
@@ -315,15 +383,12 @@ func (c *Config) validate() error {
 				if t.Tool == "" {
 					return fmt.Errorf("server %q: local[%d]: tool name is required", s.Name, j)
 				}
-				if strings.Contains(t.Tool, "_") {
-					return fmt.Errorf("server %q: local tool %q: tool name must not contain underscores", s.Name, t.Tool)
-				}
 				if _, dup := seenTools[t.Tool]; dup {
 					return fmt.Errorf("server %q: duplicate local tool name %q", s.Name, t.Tool)
 				}
 				seenTools[t.Tool] = struct{}{}
 
-				hasToolCmd := t.Command != ""
+				hasToolCmd := !t.Command.IsEmpty()
 				hasToolURL := t.URL != ""
 				if hasToolCmd && hasToolURL {
 					return fmt.Errorf("server %q: local tool %q: command and url are mutually exclusive; set exactly one", s.Name, t.Tool)
@@ -335,6 +400,26 @@ func (c *Config) validate() error {
 				if t.Timeout != "" {
 					if d, err := time.ParseDuration(t.Timeout); err != nil || d <= 0 {
 						return fmt.Errorf("server %q: local tool %q: timeout %q is not a valid positive duration", s.Name, t.Tool, t.Timeout)
+					}
+				}
+
+				// Validate named params.
+				validParamTypes := map[string]bool{
+					"string": true, "array": true, "integer": true,
+					"number": true, "boolean": true,
+				}
+				seenParams := make(map[string]struct{}, len(t.Params))
+				for k, p := range t.Params {
+					if p.Name == "" {
+						return fmt.Errorf("server %q: local tool %q: params[%d]: name is required", s.Name, t.Tool, k)
+					}
+					if _, dup := seenParams[p.Name]; dup {
+						return fmt.Errorf("server %q: local tool %q: duplicate param name %q", s.Name, t.Tool, p.Name)
+					}
+					seenParams[p.Name] = struct{}{}
+					if p.Type != "" && !validParamTypes[p.Type] {
+						return fmt.Errorf("server %q: local tool %q: param %q: type %q is invalid; must be string, array, integer, number, or boolean",
+							s.Name, t.Tool, p.Name, p.Type)
 					}
 				}
 			}
